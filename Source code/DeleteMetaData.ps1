@@ -1,6 +1,7 @@
 <#
 DeleteMetaData-UI.ps1 (Upgraded: Remember + Tooltips + Loaded Display)
 By NekoJonez - v0.2 BETA
+Release build date: 25/12/2025
 #>
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -14,11 +15,13 @@ $AppName = "ExifToolUI"
 $ConfigDir = Join-Path $Env:APPDATA $AppName
 $ConfigPath = Join-Path $ConfigDir "config.json"
 
+# If the user stored a config, let's load it.
 function Import-Config {
     if (Test-Path -LiteralPath $ConfigPath) { try { return (Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json) } catch {} }
     return $Null
 }
 
+# If the user wants to save a config, let's let them.
 function Save-Config($Obj) {
     if (!(Test-Path -LiteralPath $ConfigDir)) { New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null }
     ($Obj | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
@@ -26,6 +29,7 @@ function Save-Config($Obj) {
 
 # ---------- Helpers & functions ----------
 # ! TODO: comments
+# With this function we are going to make sure that if the folder doesn't exist, we create it first.
 function Set-Ensure-Dir([string]$Path) {
     if (!(Test-Path -LiteralPath $Path)) { New-Item -ItemType Directory -Path $Path -Force | Out-Null }
 }
@@ -36,30 +40,52 @@ function Get-RelativePath([string]$Base, [string]$Full) {
     return $Full.Substring($BaseTrim.Length).TrimStart('\')
 }
 
-function Add-To-Log([System.Windows.Forms.TextBox]$Box, [string]$Text) {
-    $Ts = (Get-Date).ToString("HH:mm:ss")
-    $Box.AppendText("[$Ts] $Text`r`n")
-    $Box.SelectionStart = $Box.TextLength
-    $Box.ScrollToCaret()
+# With this function we are going to add to the log with a datetime stamp.
+function Add-To-Log([System.Windows.Forms.TextBox]$InputTextbox, [string]$Logline) {
+    $Timestamp_Get = (Get-Date).ToString("HH:mm:ss")
+    $InputTextbox.AppendText("[$Timestamp_Get] $Logline`r`n")
+    $InputTextbox.SelectionStart = $InputTextbox.TextLength
+    $InputTextbox.ScrollToCaret()
 }
 
+# We are going to test if the tool isn't corrupted/an actual ExifTool and get the version number.
 function Test-ExifToolRunnable {
     param([Parameter(Mandatory)][string]$Path)
 
     if (!(Test-Path -LiteralPath $Path)) { return $Null }
+
+    # Fast filename sanity check (allows versioned filenames)
+    $Name = [IO.Path]::GetFileName($Path)
+    if ($Name -notmatch '(?i)exiftool') { return $Null }
+
+    # Try runtime check first (authoritative)
     try {
         $Ver = & $Path -ver 2>$Null
-        if ($Ver) { return $Ver.Trim() }
+        if ($Ver -and $Ver.Trim() -match '^\d+(\.\d+)*$') {
+            return $Ver.Trim()
+        }
+    }
+    catch { return $Null }
+
+    # Fallback: metadata check (best-effort)
+    try {
+        $Info = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($Path)
+        if ($Info.ProductName -and $Info.ProductName -match '(?i)exiftool') {
+            # If ProductName says ExifTool but -ver failed, treat as not runnable
+            return $Null
+        }
     }
     catch {}
+
     return $Null
 }
 
 function Expand-ExeCandidates([string[]]$Patterns) {
     $Out = New-Object System.Collections.Generic.List[string]
+
     foreach ($Pattern in $Patterns) {
         try {
-            if ($Pattern -like "*`**") {
+            if ($Pattern -match '[\*\?]') {
                 Get-ChildItem -Path $Pattern -ErrorAction SilentlyContinue | ForEach-Object { $Out.Add($_.FullName) }
             }
             else {
@@ -68,11 +94,73 @@ function Expand-ExeCandidates([string[]]$Patterns) {
         }
         catch {}
     }
+
     $Out | Select-Object -Unique
+}
+
+
+function Get-ExifToolSearchInfo {
+    <#
+      Single source of truth for:
+      - Candidate path patterns to scan (Resolve-ExifToolPath)
+      - Good starting directories for file picker (Set-ExifToolPath)
+    #>
+
+    $ChocoTools = "C:\ProgramData\chocolatey\lib\exiftool\tools"
+    $WgLinks = Join-Path $Env:LOCALAPPDATA "Microsoft\WinGet\Links"
+    $WgPackages = Join-Path $Env:LOCALAPPDATA "Microsoft\WinGet\Packages"
+
+    $User_Downloads_Folder = Join-Path $Env:USERPROFILE "Downloads"
+    $User_Documents_Folder = Join-Path $Env:USERPROFILE "Documents"
+    $User_Desktop_Folder = Join-Path $Env:USERPROFILE "Desktop"
+    $User_Pictures_Folder = Join-Path $Env:USERPROFILE "Pictures"
+
+    # Candidate PATH PATTERNS (used for scanning)
+    $CandidatePatterns = @(
+        # Chocolatey
+        "C:\ProgramData\chocolatey\bin\exiftool.exe",
+        "C:\ProgramData\chocolatey\lib\exiftool\tools\exiftool.exe",
+        "C:\ProgramData\chocolatey\lib\exiftool\tools\exiftool-*\exiftool.exe",
+
+        # Winget links + packages
+        (Join-Path $WgLinks    "exiftool.exe"),
+        (Join-Path $WgPackages "*\*\exiftool.exe"),
+        (Join-Path $WgPackages "*\exiftool.exe"),
+        (Join-Path $WgPackages "*\*\*exiftool*.exe"),
+        (Join-Path $WgPackages "*\*exiftool*.exe"),
+
+        # User folders (manual installs)
+        (Join-Path $User_Downloads_Folder  "exiftool.exe"),
+        (Join-Path $User_Documents_Folder "exiftool.exe"),
+        (Join-Path $User_Desktop_Folder "exiftool.exe"),
+        (Join-Path $User_Downloads_Folder  "exiftool-*\exiftool.exe"),
+        (Join-Path $User_Documents_Folder "exiftool-*\exiftool.exe"),
+        (Join-Path $User_Desktop_Folder "exiftool-*\exiftool.exe"),
+        (Join-Path $User_Downloads_Folder  "*exiftool*\exiftool.exe"),
+        (Join-Path $User_Documents_Folder "*exiftool*\exiftool.exe"),
+        (Join-Path $User_Desktop_Folder "*exiftool*\exiftool.exe"),
+        (Join-Path $User_Pictures_Folder "*exiftool*\exiftool.exe")
+    )
+
+    # Preferred INITIAL DIRECTORIES (used for OpenFileDialog starting folder)
+    $InitialDirectories = @( $WgLinks, $WgPackages, $ChocoTools, $User_Downloads_Folder, $User_Documents_Folder, $User_Desktop_Folder, $User_Pictures_Folder, $Env:USERPROFILE )
+
+    return [pscustomobject]@{
+        ChocoTools         = $ChocoTools
+        WgLinks            = $WgLinks
+        WgPackages         = $WgPackages
+        Downloads          = $User_Downloads_Folder
+        Documents          = $User_Documents_Folder
+        Desktop            = $User_Desktop_Folder
+        CandidatePatterns  = $CandidatePatterns
+        InitialDirectories = $InitialDirectories
+    }
 }
 
 function Resolve-ExifToolPath {
     param( [string]$PreferredPath = $Null, [switch]$OfferWingetInstall, [switch]$OpenDownloadIfMissing )
+
+    $Info = Get-ExifToolSearchInfo
 
     # 1) Preferred path
     if ($PreferredPath) {
@@ -87,65 +175,13 @@ function Resolve-ExifToolPath {
         if ($Ver) { return [pscustomobject]@{ Path = $Cmd.Source; Version = $Ver } }
     }
 
-    # 3) Chocolatey + version subfolders
-    $ChocoTools = "C:\ProgramData\chocolatey\lib\exiftool\tools"
-    $Candidates = @(
-        "C:\ProgramData\chocolatey\bin\exiftool.exe",
-        "C:\ProgramData\chocolatey\lib\exiftool\tools\exiftool.exe",
-        "C:\ProgramData\chocolatey\lib\exiftool\tools\exiftool-*\exiftool.exe"
-    )
-
-    if (Test-Path -LiteralPath $ChocoTools) {
-        try {
-            $More = Get-ChildItem -LiteralPath $ChocoTools -Recurse -File -Filter "exiftool.exe" -ErrorAction SilentlyContinue |
-            Select-Object -ExpandProperty FullName
-            $Candidates += $More
-        }
-        catch {}
-    }
-
-    foreach ($P in (Expand-ExeCandidates $Candidates)) {
+    # 3) Scan all known candidate patterns (single source of truth)
+    foreach ($P in (Expand-ExeCandidates $Info.CandidatePatterns)) {
         $Ver = Test-ExifToolRunnable -Path $P
         if ($Ver) { return [pscustomobject]@{ Path = $P; Version = $Ver } }
     }
 
-    # 4) Winget usual spots + links
-    $WingetCandidates = @(
-        "$Env:LOCALAPPDATA\Microsoft\WinGet\Links\exiftool.exe",
-        "$Env:LOCALAPPDATA\Microsoft\WinGet\Packages\*\*\exiftool.exe",
-        "$Env:LOCALAPPDATA\Microsoft\WinGet\Packages\*\exiftool.exe",
-        "$Env:LOCALAPPDATA\Microsoft\WinGet\Packages\*\*\*exiftool*.exe",
-        "$Env:LOCALAPPDATA\Microsoft\WinGet\Packages\*\*exiftool*.exe"
-    )
-
-    foreach ($P in (Expand-ExeCandidates $WingetCandidates)) {
-        $Ver = Test-ExifToolRunnable -Path $P
-        if ($Ver) { return [pscustomobject]@{ Path = $P; Version = $Ver } }
-    }
-
-    # 5) Downloads / Documents / Desktop (common manual extract locations)
-    $Dl = Join-Path $Env:USERPROFILE "Downloads"
-    $Doc = Join-Path $Env:USERPROFILE "Documents"
-    $Dsk = Join-Path $Env:USERPROFILE "Desktop"
-
-    $UserCandidates = @(
-        (Join-Path $Dl  "exiftool.exe"),
-        (Join-Path $Doc "exiftool.exe"),
-        (Join-Path $Dsk "exiftool.exe"),
-        (Join-Path $Dl  "exiftool-*\exiftool.exe"),
-        (Join-Path $Doc "exiftool-*\exiftool.exe"),
-        (Join-Path $Dsk "exiftool-*\exiftool.exe"),
-        (Join-Path $Dl  "*exiftool*\exiftool.exe"),
-        (Join-Path $Doc "*exiftool*\exiftool.exe"),
-        (Join-Path $Dsk "*exiftool*\exiftool.exe")
-    )
-
-    foreach ($P in (Expand-ExeCandidates $UserCandidates)) {
-        $Ver = Test-ExifToolRunnable -Path $P
-        if ($Ver) { return [pscustomobject]@{ Path = $P; Version = $Ver } }
-    }
-
-    # 6) Ask user to locate exiftool.exe
+    # 4) Ask user to locate exiftool.exe
     $Ofd = New-Object System.Windows.Forms.OpenFileDialog
     $Ofd.Title = "Locate exiftool.exe"
     $Ofd.Filter = "ExifTool (exiftool.exe)|exiftool.exe|Executable (*.exe)|*.exe|All files (*.*)|*.*"
@@ -153,27 +189,36 @@ function Resolve-ExifToolPath {
     $Ofd.CheckFileExists = $True
     $Ofd.CheckPathExists = $True
 
-    $WgLinks = Join-Path $Env:LOCALAPPDATA "Microsoft\WinGet\Links"
-    if (Test-Path -LiteralPath $WgLinks) { $Ofd.InitialDirectory = $WgLinks }
-    elseif (Test-Path -LiteralPath $ChocoTools) { $Ofd.InitialDirectory = $ChocoTools }
-    elseif (Test-Path -LiteralPath $Dl) { $Ofd.InitialDirectory = $Dl }
-    else { $Ofd.InitialDirectory = $Env:USERPROFILE }
+    # Choose best initial directory from same sources as resolver
+    $Ofd.InitialDirectory = $Env:USERPROFILE
+    foreach ($Dir in $Info.InitialDirectories) {
+        if ($Dir -and (Test-Path -LiteralPath $Dir)) { $Ofd.InitialDirectory = $Dir; break }
+    }
 
     if ($Ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $Picked = $Ofd.FileName
         $Ver = Test-ExifToolRunnable -Path $Picked
         if ($Ver) { return [pscustomobject]@{ Path = $Picked; Version = $Ver } }
 
-        [System.Windows.Forms.MessageBox]::Show("That file doesn't seem to be ExifTool or it won't run.", "Invalid selection", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        [System.Windows.Forms.MessageBox]::Show(
+            "That file doesn't seem to be ExifTool or it won't run.",
+            "Invalid selection",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error
+        ) | Out-Null
     }
 
-    # 7) Offer winget install (optional)
+    # 5) Offer winget install (optional) — unchanged logic
     if ($OfferWingetInstall) {
         $Winget = Get-Command winget.exe -ErrorAction SilentlyContinue
         if ($Winget) {
-            $Choice = [System.Windows.Forms.MessageBox]::Show("ExifTool was not found.`r`n`r`nInstall ExifTool using winget now?", "Install ExifTool", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+            $Choice = [System.Windows.Forms.MessageBox]::Show(
+                "ExifTool was not found.`r`n`r`nInstall ExifTool using winget now?",
+                "Install ExifTool",
+                [System.Windows.Forms.MessageBoxButtons]::YesNo,
+                [System.Windows.Forms.MessageBoxIcon]::Question
+            )
 
-            # TODO: Check here correctly to install since --accept is a thing.
             if ($Choice -eq [System.Windows.Forms.DialogResult]::Yes) {
                 try { & $Winget.Source update 2>$Null | Out-Null } catch {}
 
@@ -192,15 +237,21 @@ function Resolve-ExifToolPath {
                     }
                 }
                 else {
-                    [System.Windows.Forms.MessageBox]::Show("Winget couldn't find an ExifTool package in your sources.", "Winget: package not found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning ) | Out-Null
+                    [System.Windows.Forms.MessageBox]::Show(
+                        "Winget couldn't find an ExifTool package in your sources.",
+                        "Winget: package not found",
+                        [System.Windows.Forms.MessageBoxButtons]::OK,
+                        [System.Windows.Forms.MessageBoxIcon]::Warning
+                    ) | Out-Null
                 }
             }
         }
     }
 
-    # 8) Offer official download page (optional)
+    # 6) Offer official download page (optional)
     if ($OpenDownloadIfMissing) {
-        $Choice = [System.Windows.Forms.MessageBox]::Show("ExifTool was not found on this system.`r`n`r`nOpen the official ExifTool download page?", "ExifTool missing", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+        $Choice = [System.Windows.Forms.MessageBox]::Show( "ExifTool was not found on this system.`r`n`r`nOpen the official ExifTool download page?", "ExifTool missing", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Warning)
+
         if ($Choice -eq [System.Windows.Forms.DialogResult]::Yes) {
             Start-Process "https://exiftool.org/"
             Start-Process "https://exiftool.org/install.html"
@@ -211,7 +262,12 @@ function Resolve-ExifToolPath {
 }
 
 function Set-ExifToolPath {
-    param([string]$InitialDirectory = $Null)
+    param(
+        [string]$InitialDirectory = $Null,
+        [string]$CurrentExifToolPath = $Null
+    )
+
+    $Info = Get-ExifToolSearchInfo
 
     $Ofd = New-Object System.Windows.Forms.OpenFileDialog
     $Ofd.Title = "Select exiftool.exe"
@@ -220,18 +276,22 @@ function Set-ExifToolPath {
     $Ofd.CheckFileExists = $True
     $Ofd.CheckPathExists = $True
 
+    # Priority for picker start folder:
+    # 1) caller-provided InitialDirectory
+    # 2) folder of currently-loaded ExifTool
+    # 3) first existing directory from the SAME sources as resolver
+    # 4) user profile
     if ($InitialDirectory -and (Test-Path -LiteralPath $InitialDirectory)) {
         $Ofd.InitialDirectory = $InitialDirectory
     }
+    elseif ($CurrentExifToolPath -and (Test-Path -LiteralPath $CurrentExifToolPath)) {
+        $Ofd.InitialDirectory = Split-Path -Parent $CurrentExifToolPath
+    }
     else {
-        $WgLinks = Join-Path $Env:LOCALAPPDATA "Microsoft\WinGet\Links"
-        $ChocoTools = "C:\ProgramData\chocolatey\lib\exiftool\tools"
-        $Dl = Join-Path $Env:USERPROFILE "Downloads"
-
-        if (Test-Path -LiteralPath $WgLinks) { $Ofd.InitialDirectory = $WgLinks }
-        elseif (Test-Path -LiteralPath $ChocoTools) { $Ofd.InitialDirectory = $ChocoTools }
-        elseif (Test-Path -LiteralPath $Dl) { $Ofd.InitialDirectory = $Dl }
-        else { $Ofd.InitialDirectory = $Env:USERPROFILE }
+        $Ofd.InitialDirectory = $Env:USERPROFILE
+        foreach ($Dir in $Info.InitialDirectories) {
+            if ($Dir -and (Test-Path -LiteralPath $Dir)) { $Ofd.InitialDirectory = $Dir; break }
+        }
     }
 
     if ($Ofd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return $Null }
@@ -239,7 +299,7 @@ function Set-ExifToolPath {
     $Picked = $Ofd.FileName
     $Ver = Test-ExifToolRunnable -Path $Picked
     if (-not $Ver) {
-        [System.Windows.Forms.MessageBox]::Show( "That file doesn't seem to be ExifTool or it won't run.", "Invalid selection", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+        [System.Windows.Forms.MessageBox]::Show("That file doesn't seem to be ExifTool or it won't run.", "Invalid selection", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         return $Null
     }
 
@@ -248,178 +308,300 @@ function Set-ExifToolPath {
 
 function Update-ExifLabel {
     if ($Script:Exif -and $Script:Exif.Path) {
-        $LblExif.Text = "ExifTool: $($Script:Exif.Path)  (v$($Script:Exif.Version))"
+        $Label_Chosen_ExifTool.Text = "ExifTool: $($Script:Exif.Path) - (v$($Script:Exif.Version))"
     }
     else {
-        $LblExif.Text = "ExifTool: (not loaded)"
+        $Label_Chosen_ExifTool.Text = "ExifTool: (not loaded)"
     }
 }
 
+# This is a helper function to avoid a possible bug where trailing slashes duplicate.
 function Watch-Valid-Folders {
-    $InPath = $TxtIn.Text.Trim()
-    $OutPath = $TxtOut.Text.Trim()
-    if ([string]::IsNullOrWhiteSpace($InPath) -or -not (Test-Path -LiteralPath $InPath)) { return $False }
-    if ([string]::IsNullOrWhiteSpace($OutPath)) { return $False }
-    if ($InPath.TrimEnd('\') -ieq $OutPath.TrimEnd('\')) { return $False }
+    $InputPath = $Text_InputFolder.Text.Trim()
+    $OutputPath = $Text_OutputFolder.Text.Trim()
+    if ([string]::IsNullOrWhiteSpace($InputPath) -or -not (Test-Path -LiteralPath $InputPath)) { return $False }
+    if ([string]::IsNullOrWhiteSpace($OutputPath)) { return $False }
+    if ($InputPath.TrimEnd('\') -ieq $OutputPath.TrimEnd('\')) { return $False }
     return $True
 }
 
+# PowerShell doesn't always update the UI cleanly, so we need to refresh the UI.
 function Reset-UIState {
     $HasExif = $False
     if ($Script:Exif -and $Script:Exif.Path) { $HasExif = [bool](Test-ExifToolRunnable -Path $Script:Exif.Path) }
 
-    $BtnRemember.Enabled = $HasExif
-    $BtnGo.Enabled = ($HasExif -and (Watch-Valid-Folders))
+    $Button_Remember_Exif_Location.Enabled = $HasExif
+    $Button_Start_Process.Enabled = ($HasExif -and (Watch-Valid-Folders))
 
     Update-ExifLabel
 }
 
+# With this function, we don't have to rewrite the UI per new option that we add. This makes the UI drawing dynamic for that section.
+function Add-OptionRow {
+    param( [System.Windows.Forms.TableLayoutPanel]$Panel, [System.Windows.Forms.Control[]]$Controls )
+
+    $Row = $Panel.RowCount
+    $Panel.RowCount++
+    $Panel.RowStyles.Add((New-Object System.Windows.Forms.RowStyle 'AutoSize')) | Out-Null
+
+    for ($Col = 0; $Col -lt $Controls.Count; $Col++) { if ($Controls[$Col]) { $Panel.Controls.Add($Controls[$Col], $Col, $Row) | Out-Null } }
+}
+
 # ---------- UI ----------
+# --- Form ---
 $Form = New-Object System.Windows.Forms.Form
 $Form.Text = "Bulk EXIF/Metadata Stripper (ExifTool)"
 $Form.StartPosition = "CenterScreen"
 $Form.Size = New-Object System.Drawing.Size(920, 610)
 $Form.MinimumSize = New-Object System.Drawing.Size(920, 700)
 
-$LblIn = New-Object System.Windows.Forms.Label
-$LblIn.Text = "Input folder:"
-$LblIn.Location = New-Object System.Drawing.Point(12, 16)
-$LblIn.AutoSize = $True
+# --- TableLayoutPanel ---
+$Table_Input_Output = New-Object System.Windows.Forms.TableLayoutPanel
+$Table_Input_Output.Dock = 'Top'
+$Table_Input_Output.AutoSize = $True
+$Table_Input_Output.AutoSizeMode = 'GrowAndShrink'
+$Table_Input_Output.ColumnCount = 3
+$Table_Input_Output.RowCount = 2
 
-$TxtIn = New-Object System.Windows.Forms.TextBox
-$TxtIn.Location = New-Object System.Drawing.Point(110, 12)
-$TxtIn.Size = New-Object System.Drawing.Size(610, 24)
-$TxtIn.Anchor = "Top,Left,Right"
+# Column styles
+$Table_Input_Output.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle 'AutoSize')) | Out-Null
+$Table_Input_Output.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle 'Percent', 100)) | Out-Null
+$Table_Input_Output.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle 'Absolute', 160)) | Out-Null
 
-$BtnIn = New-Object System.Windows.Forms.Button
-$BtnIn.Text = "Browse…"
-$BtnIn.Location = New-Object System.Drawing.Point(735, 10)
-$BtnIn.Size = New-Object System.Drawing.Size(160, 28)
-$BtnIn.Anchor = "Top,Right"
-$BtnIn.Cursor = [System.Windows.Forms.Cursors]::Hand
+# --- Input row ---
+$Label_Input_Folder = New-Object System.Windows.Forms.Label
+$Label_Input_Folder.Text = "Input folder:"
+$Label_Input_Folder.AutoSize = $True
+$Label_Input_Folder.Anchor = 'Left'
 
-$LblOut = New-Object System.Windows.Forms.Label
-$LblOut.Text = "Output folder:"
-$LblOut.Location = New-Object System.Drawing.Point(12, 52)
-$LblOut.AutoSize = $True
+$Text_InputFolder = New-Object System.Windows.Forms.TextBox
+$Text_InputFolder.Dock = 'Fill'
 
-$TxtOut = New-Object System.Windows.Forms.TextBox
-$TxtOut.Location = New-Object System.Drawing.Point(110, 48)
-$TxtOut.Size = New-Object System.Drawing.Size(610, 24)
-$TxtOut.Anchor = "Top,Left,Right"
+$Button_Input_Folder_Choose = New-Object System.Windows.Forms.Button
+$Button_Input_Folder_Choose.Text = "Browse…"
+$Button_Input_Folder_Choose.Dock = 'Fill'
+$Button_Input_Folder_Choose.Cursor = [System.Windows.Forms.Cursors]::Hand
 
-$BtnOut = New-Object System.Windows.Forms.Button
-$BtnOut.Text = "Browse…"
-$BtnOut.Location = New-Object System.Drawing.Point(735, 46)
-$BtnOut.Size = New-Object System.Drawing.Size(160, 28)
-$BtnOut.Anchor = "Top,Right"
-$BtnOut.Cursor = [System.Windows.Forms.Cursors]::Hand
+# --- Output row ---
+$Label_Output_Folder = New-Object System.Windows.Forms.Label
+$Label_Output_Folder.Text = "Output folder:"
+$Label_Output_Folder.AutoSize = $True
+$Label_Output_Folder.Anchor = 'Left'
 
-$ChkSub = New-Object System.Windows.Forms.CheckBox
-$ChkSub.Text = "Include subfolders (recursive)"
-$ChkSub.Location = New-Object System.Drawing.Point(110, 82)
-$ChkSub.AutoSize = $True
-$ChkSub.Checked = $True
+$Text_OutputFolder = New-Object System.Windows.Forms.TextBox
+$Text_OutputFolder.Dock = 'Fill'
 
-$ChkThumbs = New-Object System.Windows.Forms.CheckBox
-$ChkThumbs.Text = "Remove embedded previews/thumbnails too"
-$ChkThumbs.Location = New-Object System.Drawing.Point(360, 82)
-$ChkThumbs.AutoSize = $True
-$ChkThumbs.Checked = $True
+$Button_Output_Folder_Choose = New-Object System.Windows.Forms.Button
+$Button_Output_Folder_Choose.Text = "Browse…"
+$Button_Output_Folder_Choose.Dock = 'Fill'
+$Button_Output_Folder_Choose.Cursor = [System.Windows.Forms.Cursors]::Hand
 
-$LblExif = New-Object System.Windows.Forms.Label
-$LblExif.Text = "ExifTool: (not loaded)"
-$LblExif.Location = New-Object System.Drawing.Point(12, 110)
-$LblExif.Size = New-Object System.Drawing.Size(710, 18)
-$LblExif.Anchor = "Top,Left,Right"
+# --- Input & output adding to the table_input_output ---
+$Table_Input_Output.Controls.Add($Label_Input_Folder, 0, 0) | Out-Null
+$Table_Input_Output.Controls.Add($Text_InputFolder, 1, 0) | Out-Null
+$Table_Input_Output.Controls.Add($Button_Input_Folder_Choose, 2, 0) | Out-Null
 
-$BtnExif = New-Object System.Windows.Forms.Button
-$BtnExif.Text = "Select ExifTool…"
-$BtnExif.Location = New-Object System.Drawing.Point(735, 104)
-$BtnExif.Size = New-Object System.Drawing.Size(160, 28)
-$BtnExif.Anchor = "Top,Right"
-$BtnExif.Cursor = [System.Windows.Forms.Cursors]::Hand
+$Table_Input_Output.Controls.Add($Label_Output_Folder, 0, 1) | Out-Null
+$Table_Input_Output.Controls.Add($Text_OutputFolder, 1, 1) | Out-Null
+$Table_Input_Output.Controls.Add($Button_Output_Folder_Choose, 2, 1) | Out-Null
 
-$BtnRemember = New-Object System.Windows.Forms.Button
-$BtnRemember.Text = "Remember"
-$BtnRemember.Location = New-Object System.Drawing.Point(735, 136)
-$BtnRemember.Size = New-Object System.Drawing.Size(160, 28)
-$BtnRemember.Anchor = "Top,Right"
-$BtnRemember.Cursor = [System.Windows.Forms.Cursors]::Hand
+# --- Options TableLayoutPanel (under the first table) ---
+$OptTable = New-Object System.Windows.Forms.TableLayoutPanel
+$OptTable.Dock = 'Top'
+$OptTable.Padding = '10,0,10,10'
+$OptTable.AutoSize = $True
+$OptTable.AutoSizeMode = 'GrowAndShrink'
+$OptTable.ColumnCount = 1
+$OptTable.RowCount = 0
 
-$BtnGo = New-Object System.Windows.Forms.Button
-$BtnGo.Text = "GO"
-$BtnGo.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
-$BtnGo.Location = New-Object System.Drawing.Point(735, 202)
-$BtnGo.Size = New-Object System.Drawing.Size(160, 34)
-$BtnGo.Anchor = "Top,Right"
-$BtnGo.Cursor = [System.Windows.Forms.Cursors]::Hand
+$OptTable.ColumnStyles.Add( (New-Object System.Windows.Forms.ColumnStyle 'Percent', 100) ) | Out-Null
 
-$Progress = New-Object System.Windows.Forms.ProgressBar
-$Progress.Location = New-Object System.Drawing.Point(12, 212)
-$Progress.Size = New-Object System.Drawing.Size(710, 18)
-$Progress.Anchor = "Top,Left,Right"
-$Progress.Minimum = 0
-$Progress.Maximum = 100
-$Progress.Value = 0
+$Label_Options_Section = New-Object System.Windows.Forms.Label
+$Label_Options_Section.Text = "Options"
+$Label_Options_Section.AutoSize = $True
+$Label_Options_Section.Font = New-Object System.Drawing.Font( $Form.Font, [System.Drawing.FontStyle]::Bold )
+$Label_Options_Section.Margin = '0,8,0,6'
 
-$LblStatus = New-Object System.Windows.Forms.Label
-$LblStatus.Text = "Status: idle"
-$LblStatus.Location = New-Object System.Drawing.Point(12, 238)
-$LblStatus.Size = New-Object System.Drawing.Size(883, 18)
-$LblStatus.Anchor = "Top,Left,Right"
+$Checkbox_Include_Subfolders = New-Object System.Windows.Forms.CheckBox
+$Checkbox_Include_Subfolders.Text = "Include subfolders (recursive)"
+$Checkbox_Include_Subfolders.AutoSize = $True
+$Checkbox_Include_Subfolders.Checked = $True
+$Checkbox_Include_Subfolders.Cursor = [System.Windows.Forms.Cursors]::Hand
 
-$TxtLog = New-Object System.Windows.Forms.TextBox
-$TxtLog.Location = New-Object System.Drawing.Point(12, 265)
-$TxtLog.Size = New-Object System.Drawing.Size(883, 300)
-$TxtLog.Anchor = "Top,Bottom,Left,Right"
-$TxtLog.Multiline = $True
-$TxtLog.ScrollBars = "Vertical"
-$TxtLog.ReadOnly = $True
-$TxtLog.Font = New-Object System.Drawing.Font("Consolas", 9)
+$Checkbox_Remove_Thumbs = New-Object System.Windows.Forms.CheckBox
+$Checkbox_Remove_Thumbs.Text = "Remove embedded previews/thumbnails too"
+$Checkbox_Remove_Thumbs.AutoSize = $True
+$Checkbox_Remove_Thumbs.Checked = $True
+$Checkbox_Remove_Thumbs.Cursor = [System.Windows.Forms.Cursors]::Hand
 
-$LinkGithub = New-Object System.Windows.Forms.LinkLabel
-$LinkGithub.Text = "Bulk Image Metadata Removal – GitHub - Developed by NekoJonez - 22/12/2025 - Build 0.1 BETA"
-$LinkGithub.AutoSize = $True
-$LinkGithub.LinkColor = [System.Drawing.Color]::DodgerBlue
-$LinkGithub.ActiveLinkColor = [System.Drawing.Color]::RoyalBlue
-$LinkGithub.VisitedLinkColor = [System.Drawing.Color]::Purple
-$LinkGithub.Location = New-Object System.Drawing.Point(12, 575)
-$LinkGithub.Add_LinkClicked({ Start-Process "https://github.com/NekoJonez/Bulk-Image-Metadata-Removal/" })
+$Checkbox_Overwrite_Filenames = New-Object System.Windows.Forms.CheckBox
+$Checkbox_Overwrite_Filenames.Text = "Overwrite existing filenames"
+$Checkbox_Overwrite_Filenames.AutoSize = $True
+$Checkbox_Overwrite_Filenames.Checked = $False
+$Checkbox_Overwrite_Filenames.Cursor = [System.Windows.Forms.Cursors]::Hand
 
-$BtnExit = New-Object System.Windows.Forms.Button
-$BtnExit.Text = "Exit"
-$BtnExit.Size = New-Object System.Drawing.Size(120, 30)
-$BtnExit.Cursor = [System.Windows.Forms.Cursors]::Hand
-$BtnExit.AutoSize = $True
-$BtnExit.Location = New-Object System.Drawing.Point(12, 600)
-$BtnExit.Add_Click({ $Form.Close() })
+$Checkbox_Open_Output_Folder = New-Object System.Windows.Forms.CheckBox
+$Checkbox_Open_Output_Folder.Text = "Open output folder after conversion"
+$Checkbox_Open_Output_Folder.AutoSize = $True
+$Checkbox_Open_Output_Folder.Checked = $False
+$Checkbox_Open_Output_Folder.Cursor = [System.Windows.Forms.Cursors]::Hand
 
-$Form.Controls.AddRange(@(
-        $LblIn, $TxtIn, $BtnIn,
-        $LblOut, $TxtOut, $BtnOut,
-        $ChkSub, $ChkThumbs,
-        $LblExif, $BtnExif, $BtnRemember,
-        $Progress, $BtnGo,
-        $LblStatus, $TxtLog,
-        $LinkGithub, $BtnExit
-    ))
+Add-OptionRow -Panel $OptTable -Controls @($Label_Options_Section)
+Add-OptionRow -Panel $OptTable -Controls @($Checkbox_Include_Subfolders)
+Add-OptionRow -Panel $OptTable -Controls @($Checkbox_Remove_Thumbs)
+Add-OptionRow -Panel $OptTable -Controls @($Checkbox_Overwrite_Filenames)
+Add-OptionRow -Panel $OptTable -Controls @($Checkbox_Open_Output_Folder)
+
+# --- ExifTool Row Panel (FIX: prevents it being hidden behind Dock panels) ---
+$PanelExif = New-Object System.Windows.Forms.TableLayoutPanel
+$PanelExif.Dock = 'Top'
+$PanelExif.AutoSize = $True
+$PanelExif.AutoSizeMode = 'GrowAndShrink'
+$PanelExif.ColumnCount = 3
+
+$PanelExif.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle 'Percent', 100)) | Out-Null
+$PanelExif.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle 'Absolute', 160)) | Out-Null
+$PanelExif.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle 'Absolute', 160)) | Out-Null
+
+$Label_Chosen_ExifTool = New-Object System.Windows.Forms.Label
+$Label_Chosen_ExifTool.Text = "ExifTool: (not loaded)"
+$Label_Chosen_ExifTool.Size = New-Object System.Drawing.Size(710, 18)
+$Label_Chosen_ExifTool.Anchor = "Top,Left,Right"
+$Label_Chosen_ExifTool.Dock = 'Fill'
+
+$Button_Select_ExifTool = New-Object System.Windows.Forms.Button
+$Button_Select_ExifTool.Text = "Select ExifTool…"
+$Button_Select_ExifTool.Size = New-Object System.Drawing.Size(160, 28)
+$Button_Select_ExifTool.Anchor = "Top,Right"
+$Button_Select_ExifTool.Cursor = [System.Windows.Forms.Cursors]::Hand
+$Button_Select_ExifTool.Dock = 'Fill'
+
+$Button_Remember_Exif_Location = New-Object System.Windows.Forms.Button
+$Button_Remember_Exif_Location.Text = "Remember"
+$Button_Remember_Exif_Location.Size = New-Object System.Drawing.Size(160, 28)
+$Button_Remember_Exif_Location.Anchor = "Top,Right"
+$Button_Remember_Exif_Location.Cursor = [System.Windows.Forms.Cursors]::Hand
+$Button_Remember_Exif_Location.Dock = 'Fill'
+
+$PanelExif.Controls.Add($Label_Chosen_ExifTool, 0, 0)
+$PanelExif.Controls.Add($Button_Select_ExifTool, 1, 0)
+$PanelExif.Controls.Add($Button_Remember_Exif_Location, 2, 0)
+
+$PanelAction = New-Object System.Windows.Forms.TableLayoutPanel
+$PanelAction.Dock = 'Top'
+$PanelAction.AutoSize = $True
+$PanelAction.AutoSizeMode = 'GrowAndShrink'
+$PanelAction.ColumnCount = 2
+$PanelAction.RowCount = 1
+
+$PanelAction.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+$PanelAction.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Absolute, 170))) | Out-Null
+
+$Progress_Bar_Process = New-Object System.Windows.Forms.ProgressBar
+$Progress_Bar_Process.Dock = 'Fill'
+$Progress_Bar_Process.Minimum = 0
+$Progress_Bar_Process.Maximum = 100
+$Progress_Bar_Process.Value = 0
+
+$Button_Start_Process = New-Object System.Windows.Forms.Button
+$Button_Start_Process.Text = "GO"
+$Button_Start_Process.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)
+$Button_Start_Process.Dock = 'Fill'
+$Button_Start_Process.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+$PanelAction.Controls.Add($Progress_Bar_Process, 0, 0) | Out-Null
+$PanelAction.Controls.Add($Button_Start_Process, 1, 0) | Out-Null
+
+# ---------------------------
+# STATUS + LOG PANEL
+# ---------------------------
+$PanelLog = New-Object System.Windows.Forms.TableLayoutPanel
+$PanelLog.Dock = 'Fill'
+$PanelLog.ColumnCount = 1
+$PanelLog.RowCount = 2
+
+$PanelLog.RowStyles.Add(( New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
+$PanelLog.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::Percent, 100))) | Out-Null
+
+# Status label (THIS was missing)
+$Label_Status = New-Object System.Windows.Forms.Label
+$Label_Status.Text = "Status: idle"
+$Label_Status.AutoSize = $True
+$Label_Status.Dock = 'Fill'
+$Label_Status.TextAlign = 'MiddleLeft'
+
+# Log textbox
+$Logbox_Log = New-Object System.Windows.Forms.TextBox
+$Logbox_Log.Dock = 'Fill'
+$Logbox_Log.Multiline = $True
+$Logbox_Log.ScrollBars = 'Vertical'
+$Logbox_Log.ReadOnly = $True
+$Logbox_Log.Font = New-Object System.Drawing.Font("Consolas", 9)
+
+$PanelLog.Controls.Add($Label_Status, 0, 0)
+$PanelLog.Controls.Add($Logbox_Log, 0, 1)
+
+$PanelFooter = New-Object System.Windows.Forms.TableLayoutPanel
+$PanelFooter.Dock = 'Bottom'
+$PanelFooter.AutoSize = $True
+$PanelFooter.AutoSizeMode = 'GrowAndShrink'
+$PanelFooter.ColumnCount = 3
+$PanelFooter.RowCount = 2
+
+$PanelFooter.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50))) | Out-Null
+$PanelFooter.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
+$PanelFooter.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50))) | Out-Null
+
+$PanelFooter.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
+$PanelFooter.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
+
+$Label_LinkGithub = New-Object System.Windows.Forms.LinkLabel
+$Label_LinkGithub.Text = "Bulk Image Metadata Removal – GitHub - Developed by NekoJonez - 25/12/2025 - Build 0.2 BETA"
+$Label_LinkGithub.AutoSize = $True
+$Label_LinkGithub.LinkColor = [System.Drawing.Color]::DodgerBlue
+$Label_LinkGithub.ActiveLinkColor = [System.Drawing.Color]::RoyalBlue
+$Label_LinkGithub.VisitedLinkColor = [System.Drawing.Color]::Purple
+$Label_LinkGithub.Add_LinkClicked({ Start-Process "https://github.com/NekoJonez/Bulk-Image-Metadata-Removal/" })
+
+$Button_Exit_Tool = New-Object System.Windows.Forms.Button
+$Button_Exit_Tool.Text = "Exit"
+$Button_Exit_Tool.AutoSize = $True
+$Button_Exit_Tool.Cursor = [System.Windows.Forms.Cursors]::Hand
+$Button_Exit_Tool.Add_Click({ $Form.Close() })
+
+# Center them by putting in the middle column
+$PanelFooter.Controls.Add($Label_LinkGithub, 1, 0) | Out-Null
+$PanelFooter.Controls.Add($Button_Exit_Tool, 1, 1) | Out-Null
+
+# --- FIX DOCK ORDER (prevents Top panels overlapping the Fill log) ---
+$Form.SuspendLayout()
+$Form.Controls.Clear()
+$Form.Controls.Add($PanelLog)      # Dock = Fill
+$Form.Controls.Add($PanelFooter)   # Dock = Bottom
+$Form.Controls.Add($PanelAction)        # Dock = Top (progress + GO)
+$Form.Controls.Add($PanelExif)          # Dock = Top
+$Form.Controls.Add($OptTable)           # Dock = Top
+$Form.Controls.Add($Table_Input_Output) # Dock = Top (should be the very top)
+
+$Form.ResumeLayout($True)
 
 # Tooltips
-$Tip = New-Object System.Windows.Forms.ToolTip
-$Tip.AutoPopDelay = 12000
-$Tip.InitialDelay = 250
-$Tip.ReshowDelay = 150
-$Tip.ShowAlways = $True
+$Tooltip_Display = New-Object System.Windows.Forms.ToolTip
+$Tooltip_Display.AutoPopDelay = 12000
+$Tooltip_Display.InitialDelay = 250
+$Tooltip_Display.ReshowDelay = 150
+$Tooltip_Display.ShowAlways = $True
 
-$Tip.SetToolTip($BtnIn, "Pick the folder that contains the images you want to clean.")
-$Tip.SetToolTip($BtnOut, "Pick where the cleaned copies should be written.")
-$Tip.SetToolTip($ChkSub, "If enabled, includes images in subfolders too.")
-$Tip.SetToolTip($ChkThumbs, "Also removes embedded preview images/thumbnails if present.")
-$Tip.SetToolTip($BtnExif, "Select a different exiftool.exe.")
-$Tip.SetToolTip($BtnRemember, "Save the ExifTool path so you don’t need to re-select it next run.")
-$Tip.SetToolTip($BtnGo, "Copy images to Output and strip all metadata from the copies.")
-$Tip.SetToolTip($BtnExit, "This will exit the tool.")
+$Tooltip_Display.SetToolTip($Button_Input_Folder_Choose, "Pick the folder that contains the images you want to clean.")
+$Tooltip_Display.SetToolTip($Button_Output_Folder_Choose, "Pick where the cleaned copies should be written.")
+$Tooltip_Display.SetToolTip($Checkbox_Include_Subfolders, "If enabled, includes images in subfolders too.")
+$Tooltip_Display.SetToolTip($Checkbox_Remove_Thumbs, "If enabled, removes embedded preview images/thumbnails if present.")
+$Tooltip_Display.SetToolTip($Checkbox_Overwrite_Filenames, "If enabled, this overwrites the filenames of files existing in the output folder.")
+$Tooltip_Display.SetToolTip($Checkbox_Open_Output_Folder, "If enabled, the output folder will be opened after conversion.")
+$Tooltip_Display.SetToolTip($Button_Select_ExifTool, "Select a different exiftool.exe.")
+$Tooltip_Display.SetToolTip($Button_Remember_Exif_Location, "Save the ExifTool path so you don’t need to re-select it next run.")
+$Tooltip_Display.SetToolTip($Button_Start_Process, "Copy images to Output and strip all metadata from the copies.")
+$Tooltip_Display.SetToolTip($Button_Exit_Tool, "This will exit the tool.")
 
 $FolderDlg = New-Object System.Windows.Forms.FolderBrowserDialog
 $FolderDlg.ShowNewFolderButton = $True
@@ -427,148 +609,169 @@ $FolderDlg.ShowNewFolderButton = $True
 # Script-scoped state
 $Script:Exif = $Null
 
-$TxtIn.Add_TextChanged({ Reset-UIState })
-$TxtOut.Add_TextChanged({ Reset-UIState })
+$Text_InputFolder.Add_TextChanged({ Reset-UIState })
+$Text_OutputFolder.Add_TextChanged({ Reset-UIState })
 
-$BtnIn.Add_Click({
+$Button_Input_Folder_Choose.Add_Click({
         $FolderDlg.Description = "Select INPUT folder containing images"
-        if ($FolderDlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $TxtIn.Text = $FolderDlg.SelectedPath }
+        if ($FolderDlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $Text_InputFolder.Text = $FolderDlg.SelectedPath }
     })
 
-$BtnOut.Add_Click({
+$Button_Output_Folder_Choose.Add_Click({
         $FolderDlg.Description = "Select OUTPUT folder for cleaned images"
-        if ($FolderDlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $TxtOut.Text = $FolderDlg.SelectedPath }
+        if ($FolderDlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $Text_OutputFolder.Text = $FolderDlg.SelectedPath }
     })
 
 # Load config preferred path, then resolve exiftool
-$Cfg = Import-Config
+$ConfigFile = Import-Config
 $Preferred = $Null
-if ($Cfg -and $Cfg.ExifToolPath) { $Preferred = [string]$Cfg.ExifToolPath }
+if ($ConfigFile -and $ConfigFile.ExifToolPath) { $Preferred = [string]$ConfigFile.ExifToolPath }
 
 $Script:Exif = Resolve-ExifToolPath -PreferredPath $Preferred -OfferWingetInstall -OpenDownloadIfMissing
 Reset-UIState
 
-$BtnExif.Add_Click({
+$Button_Select_ExifTool.Add_Click({
         # If ExifTool is already loaded and runnable, confirm before changing it
         $HasValidExif = $False
-        if ($Script:Exif -and $Script:Exif.Path) {
-            $HasValidExif = [bool](Test-ExifToolRunnable -Path $Script:Exif.Path)
-        }
+        if ($Script:Exif -and $Script:Exif.Path) { $HasValidExif = [bool](Test-ExifToolRunnable -Path $Script:Exif.Path) }
 
         if ($HasValidExif) {
-            $Choice = [System.Windows.Forms.MessageBox]::Show($Form, "ExifTool is already loaded:`r`n$($Script:Exif.Path)`r`n`r`nAre you sure you want to change the tool?", "Confirm change", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
+            $Choice = [System.Windows.Forms.MessageBox]::Show( $Form, "ExifTool is already loaded:`r`n$($Script:Exif.Path)`r`n`r`nAre you sure you want to change the tool?", "Confirm change", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)
             if ($Choice -ne [System.Windows.Forms.DialogResult]::Yes) { return }
         }
 
-        # Browse for a new exiftool.exe (force picker)
-        $Initial = $Null
-        if ($Script:Exif -and $Script:Exif.Path) { $Initial = (Split-Path -Parent $Script:Exif.Path) }
-
-        $Picked = Set-ExifToolPath -InitialDirectory $Initial
+        # Force picker; it will start in the best directory automatically:
+        # - InitialDirectory (if you pass it)
+        # - else folder of current ExifTool
+        # - else common resolver locations
+        $Picked = Set-ExifToolPath -CurrentExifToolPath ($Script:Exif.Path)
         if ($Picked) {
             $Script:Exif = $Picked
             Reset-UIState
         }
     })
 
-$BtnRemember.Add_Click({
+$Button_Remember_Exif_Location.Add_Click({
         if ($Script:Exif -and $Script:Exif.Path) {
             Save-Config ([pscustomobject]@{ ExifToolPath = $Script:Exif.Path })
             [System.Windows.Forms.MessageBox]::Show($Form, "Saved ExifTool path for next time.", "Saved", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
         }
     })
 
-$BtnGo.Add_Click({
+$Button_Start_Process.Add_Click({
         if (!($Script:Exif -and $Script:Exif.Path)) { return }
         if (-not (Watch-Valid-Folders)) { return }
 
-        $InPath = $TxtIn.Text.Trim()
-        $OutPath = $TxtOut.Text.Trim()
+        $InputPath = $Text_InputFolder.Text.Trim()
+        $OutputPath = $Text_OutputFolder.Text.Trim()
 
         # Disable controls during run
-        $BtnGo.Enabled = $False
-        $BtnIn.Enabled = $False
-        $BtnOut.Enabled = $False
-        $BtnExif.Enabled = $False
-        $BtnRemember.Enabled = $False
-        $ChkSub.Enabled = $False
-        $ChkThumbs.Enabled = $False
+        $Button_Start_Process.Enabled = $False
+        $Button_Input_Folder_Choose.Enabled = $False
+        $Button_Output_Folder_Choose.Enabled = $False
+        $Button_Select_ExifTool.Enabled = $False
+        $Button_Remember_Exif_Location.Enabled = $False
+        $Button_Exit_Tool.Enabled = $False
+        $Checkbox_Include_Subfolders.Enabled = $False
+        $Checkbox_Remove_Thumbs.Enabled = $False
+        $Checkbox_Overwrite_Filenames.Enabled = $False
+        $Checkbox_Open_Output_Folder.Enabled = $False
 
         try {
-            $TxtLog.Clear()
-            $Progress.Value = 0
-            $LblStatus.Text = "Status: scanning…"
+            $Logbox_Log.Clear()
+            $Progress_Bar_Process.Value = 0
+            $Label_Status.Text = "Status: scanning…"
 
-            Add-To-Log $TxtLog "ExifTool: $($Script:Exif.Path) (v$($Script:Exif.Version))"
-            Add-To-Log $TxtLog "Input:   $InPath"
-            Add-To-Log $TxtLog "Output:  $OutPath"
-            Add-To-Log $TxtLog ("Recursive: " + $ChkSub.Checked)
-            Add-To-Log $TxtLog ("Remove thumbs: " + $ChkThumbs.Checked)
+            Add-To-Log $Logbox_Log "ExifTool: $($Script:Exif.Path) (v$($Script:Exif.Version))"
+            Add-To-Log $Logbox_Log "Input:   $InputPath"
+            Add-To-Log $Logbox_Log "Output:  $OutputPath"
+            Add-To-Log $Logbox_Log ("Include subfolders: " + $Checkbox_Include_Subfolders.Checked)
+            Add-To-Log $Logbox_Log ("Remove thumbs: " + $Checkbox_Remove_Thumbs.Checked)
+            Add-To-Log $Logbox_Log ("Overwriting files in output folder: " + $Checkbox_Overwrite_Filenames.Checked)
+            Add-To-Log $Logbox_Log ("Remove thumbs: " + $Checkbox_Remove_Thumbs.Checked)
 
-            Set-Ensure-Dir $OutPath
+            Set-Ensure-Dir $OutputPath
 
-            $Gci = @{ LiteralPath = $InPath; File = $True; ErrorAction = 'SilentlyContinue' }
-            if ($ChkSub.Checked) { $Gci.Recurse = $True }
+            $Gci = @{ LiteralPath = $InputPath; File = $True; ErrorAction = 'SilentlyContinue' }
+            if ($Checkbox_Include_Subfolders.Checked) { $Gci.Recurse = $True }
 
             $Files = Get-ChildItem @Gci | Where-Object { $AllowedExtensions -contains $_.Extension.ToLowerInvariant() }
-            $Total = $Files.Count
+            $TotalAmountOfFiles = $Files.Count
 
-            Add-To-Log $TxtLog "Found $Total image(s)."
-            if ($Total -eq 0) {
-                $LblStatus.Text = "Status: nothing to do"
+            Add-To-Log $Logbox_Log "Found $TotalAmountOfFiles image(s)."
+            if ($TotalAmountOfFiles -eq 0) {
+                $Label_Status.Text = "Status: nothing to do"
                 return
             }
 
-            $I = 0
-            foreach ($F in $Files) {
-                $I++
-                $LblStatus.Text = "Status: processing $I / $Total"
-                $Progress.Value = [Math]::Min(100, [int](($I / $Total) * 100))
+            $IterationCounter = 0
+            foreach ($File in $Files) {
+                $IterationCounter++
+                $Label_Status.Text = "Status: processing $IterationCounter / $TotalAmountOfFiles"
+                $Progress_Bar_Process.Value = [Math]::Min(100, [int](($IterationCounter / $TotalAmountOfFiles) * 100))
 
-                $Rel = Get-RelativePath -Base $InPath -Full $F.FullName
-                $Dest = Join-Path $OutPath $Rel
-                Set-Ensure-Dir (Split-Path -Parent $Dest)
+                $RelativePath = Get-RelativePath -Base $InputPath -Full $File.FullName
+                $DestinationFolder = Join-Path $OutputPath $RelativePath
+                Set-Ensure-Dir (Split-Path -Parent $DestinationFolder)
 
-                # Copy first
-                Copy-Item -LiteralPath $F.FullName -Destination $Dest -Force
+                $DestExists = Test-Path -LiteralPath $DestinationFolder
+
+                if ($DestExists -and -not $Checkbox_Overwrite_Filenames.Checked) {
+                    Add-To-Log $Logbox_Log "SKIP: Can't convert, file with same name exists in the output folder: $RelativePath"
+                    continue
+                }
+
+                if ($DestExists -and $Checkbox_Overwrite_Filenames.Checked) {
+                    Add-To-Log $Logbox_Log "OVERWRITE: $RelativePath"
+                    Copy-Item -LiteralPath $File.FullName -Destination $DestinationFolder -Force
+                }
+                else {
+                    Copy-Item -LiteralPath $File.FullName -Destination $DestinationFolder
+                }
 
                 # Strip metadata on copy
                 $ArgsForTool = @("-all=", "-overwrite_original", "-q", "-q")
-                if ($ChkThumbs.Checked) { $ArgsForTool += @("-ThumbnailImage=", "-PreviewImage=") }
-                $QuotedDest = '"' + $Dest + '"'
+                if ($Checkbox_Remove_Thumbs.Checked) { $ArgsForTool += @("-ThumbnailImage=", "-PreviewImage=") }
+                $QuotedDest = '"' + $DestinationFolder + '"'
                 $ArgsForTool += @("--", $QuotedDest)
 
                 $Proc = Start-Process -FilePath $Script:Exif.Path -ArgumentList $ArgsForTool -NoNewWindow -Wait -PassThru
                 if ($Proc.ExitCode -eq 0) {
-                    Add-To-Log $TxtLog "OK: $Rel"
+                    Add-To-Log $Logbox_Log "OK: $RelativePath"
                 }
                 else {
-                    Add-To-Log $TxtLog "FAIL ($($Proc.ExitCode)): $Rel"
+                    Add-To-Log $Logbox_Log "FAIL ($($Proc.ExitCode)): $RelativePath"
                 }
 
                 [System.Windows.Forms.Application]::DoEvents()
             }
 
-            $LblStatus.Text = "Status: done"
-            $Progress.Value = 100
-            Add-To-Log $TxtLog "Done. Clean images written to: $OutPath"
+            $Label_Status.Text = "Status: done"
+            $Progress_Bar_Process.Value = 100
+            Add-To-Log $Logbox_Log "Done. Clean images written to: $OutputPath"
 
             [System.Windows.Forms.MessageBox]::Show($Form, "Finished stripping metadata.`r`nCheck the output folder.", "Done", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Information) | Out-Null
+
+            if ($Checkbox_Open_Output_Folder.Checked -and (Test-Path -LiteralPath $OutputPath)) { Start-Process explorer.exe $OutputPath }
         }
         catch {
             $Detail = ($_ | Format-List * -Force | Out-String)
-            Add-To-Log $TxtLog "ERROR: $($_.Exception.Message)"
-            Add-To-Log $TxtLog $Detail
+            Add-To-Log $Logbox_Log "ERROR: $($_.Exception.Message)"
+            Add-To-Log $Logbox_Log $Detail
 
-            [System.Windows.Forms.MessageBox]::Show($Form, $Detail, "Error details", [System.Windows.Forms.MessageBoxButtons]::OK,[System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
+            [System.Windows.Forms.MessageBox]::Show($Form, $Detail, "Error details", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
         }
         finally {
             # Re-enable
-            $BtnIn.Enabled = $True
-            $BtnOut.Enabled = $True
-            $BtnExif.Enabled = $True
-            $ChkSub.Enabled = $True
-            $ChkThumbs.Enabled = $True
+            $Button_Input_Folder_Choose.Enabled = $True
+            $Button_Output_Folder_Choose.Enabled = $True
+            $Button_Select_ExifTool.Enabled = $True
+            $Button_Remember_Exif_Location.Enabled = $True
+            $Button_Exit_Tool.Enabled = $True
+            $Checkbox_Include_Subfolders.Enabled = $True
+            $Checkbox_Remove_Thumbs.Enabled = $True
+            $Checkbox_Overwrite_Filenames.Enabled = $True
+            $Checkbox_Open_Output_Folder.Enabled = $True
             Reset-UIState
         }
     })

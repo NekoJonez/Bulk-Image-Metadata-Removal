@@ -1,0 +1,16 @@
+v0.2 - 25/12/2025
+
+- Improved the options section to make it easier to add features in the future.
+- The options now use the correct mouse cursor.
+- Rewrote the search for ExifTool to be more dynamic.
+- Removed a double space in the UI in the ExifTool listing.
+- Rewrote the UI itself so it's more dynamic.
+- Fixed a bug where when you resized the window, the logbox went over the credit text and the exit button.
+- Fixed a bug where the "remember" button for the ExifTool location became unuseable after a conversion.
+- Fixed a bug where the "exit" button was still clickable during a conversion process.
+- Added a label to the options section for more UI clarity.
+- Started to improve variable names for more reading clarity.
+- Improved the code comments.
+- Improved the header.
+- The tool now default also searches the images folder for the ExifTool.
+- Gave the tool an icon.
