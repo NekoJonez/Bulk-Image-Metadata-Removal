@@ -1,7 +1,7 @@
 <#
 DeleteMetaData-UI.ps1 (Upgraded: Remember + Tooltips + Loaded Display)
-By NekoJonez - v0.2 BETA
-Release build date: 25/12/2025
+By NekoJonez - v0.3 BETA
+Release build date: 07/03/2025
 #>
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -11,29 +11,195 @@ Add-Type -AssemblyName System.Drawing
 $AllowedExtensions = @(".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".heic", ".heif", ".gif", ".bmp", ".jfif", ".avif")
 
 # ---------- Config persistence ----------
-$AppName = "ExifToolUI"
-$ConfigDir = Join-Path $Env:APPDATA $AppName
-$ConfigPath = Join-Path $ConfigDir "config.json"
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ConfigDir = $ScriptDir
+$ConfigPath = Join-Path $ConfigDir "config.ini"
 
-# If the user stored a config, let's load it.
-function Import-Config {
-    if (Test-Path -LiteralPath $ConfigPath) { try { return (Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json) } catch {} }
-    return $Null
-}
-
-# If the user wants to save a config, let's let them.
-function Save-Config($Obj) {
-    if (!(Test-Path -LiteralPath $ConfigDir)) { New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null }
-    ($Obj | ConvertTo-Json -Depth 5) | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
-}
-
-# ---------- Helpers & functions ----------
-# ! TODO: comments
-# With this function we are going to make sure that if the folder doesn't exist, we create it first.
-function Set-Ensure-Dir([string]$Path) {
+# Let's make sure the directory exists, if not create.
+function Set-Ensure-Dir {
+    param([Parameter(Mandatory)][string]$Path)
     if (!(Test-Path -LiteralPath $Path)) { New-Item -ItemType Directory -Path $Path -Force | Out-Null }
 }
 
+# This sets the default state of the INI file.
+function Get-DefaultIniConfig {
+    return [ordered]@{
+        General = [ordered]@{
+            ExifToolPath       = ""
+            InputFolder        = ""
+            OutputFolder       = ""
+            IncludeSubfolders  = "True"
+            RemoveThumbs       = "True"
+            OverwriteFilenames = "False"
+            OpenOutputFolder   = "False"
+            RememberSettings   = "True"
+        }
+    }
+}
+
+# This saves the settings into the INI file.
+function Save-IniConfig {
+    param( [Parameter(Mandatory)][hashtable]$Data )
+
+    Set-Ensure-Dir -Path $ConfigDir
+
+    $Lines = New-Object System.Collections.Generic.List[string]
+
+    foreach ($Section in $Data.Keys) {
+        $Lines.Add("[$Section]") | Out-Null
+
+        foreach ($Key in $Data[$Section].Keys) {
+            $Value = [string]$Data[$Section][$Key]
+            $Lines.Add("${Key}=${Value}") | Out-Null
+        }
+
+        $Lines.Add("") | Out-Null
+    }
+
+    Set-Content -LiteralPath $ConfigPath -Value $Lines -Encoding UTF8
+}
+
+# In case a new default config needs to be made.
+function New-DefaultIniConfig {
+    $DefaultConfig = Get-DefaultIniConfig
+    Save-IniConfig -Data $DefaultConfig
+    return $DefaultConfig
+}
+
+# Let's import the config and check if it's not filled with Smoothies or croissants?
+function Import-IniConfig {
+    if (!(Test-Path -LiteralPath $ConfigPath)) { return $Null }
+
+    $Config = [ordered]@{}
+    $CurrentSection = $Null
+
+    try {
+        foreach ($Line in (Get-Content -LiteralPath $ConfigPath -ErrorAction Stop)) {
+            $Trimmed = $Line.Trim()
+
+            if ([string]::IsNullOrWhiteSpace($Trimmed)) { continue }
+            if ($Trimmed.StartsWith(';') -or $Trimmed.StartsWith('#')) { continue }
+
+            if ($Trimmed -match '^\[(.+)\]$') {
+                $SectionName = $Matches[1].Trim()
+
+                if ([string]::IsNullOrWhiteSpace($SectionName)) { return $Null }
+                if (-not $Config.Contains($SectionName)) { $Config[$SectionName] = [ordered]@{} }
+
+                $CurrentSection = $SectionName
+                continue
+            }
+
+            if ($Trimmed -match '^(.*?)=(.*)$') {
+                $Key = $Matches[1].Trim()
+                $Value = $Matches[2].Trim()
+
+                if ([string]::IsNullOrWhiteSpace($Key)) { return $Null }
+
+                if ([string]::IsNullOrWhiteSpace($CurrentSection)) {
+                    if (-not $Config.Contains("General")) { $Config["General"] = [ordered]@{} }
+                    $CurrentSection = "General"
+                }
+
+                $Config[$CurrentSection][$Key] = $Value
+                continue
+            }
+
+            # Unknown / malformed non-empty line
+            return $Null
+        }
+
+        return $Config
+    }
+    catch {
+        return $Null
+    }
+}
+
+# If somebody edited it and made it a mess, let's fix it.
+function Repair-IniConfig {
+    param( [Parameter(Mandatory)][hashtable]$LoadedConfig )
+
+    $DefaultConfig = Get-DefaultIniConfig
+    $RepairedConfig = [ordered]@{}
+    $WasChanged = $False
+
+    foreach ($Section in $DefaultConfig.Keys) {
+        $RepairedConfig[$Section] = [ordered]@{}
+
+        if (-not $LoadedConfig.Contains($Section)) {
+            foreach ($Key in $DefaultConfig[$Section].Keys) { $RepairedConfig[$Section][$Key] = $DefaultConfig[$Section][$Key] }
+
+            $WasChanged = $True
+            continue
+        }
+
+        foreach ($Key in $DefaultConfig[$Section].Keys) {
+            if ($LoadedConfig[$Section].Contains($Key)) {
+                $RepairedConfig[$Section][$Key] = [string]$LoadedConfig[$Section][$Key]
+            }
+            else {
+                $RepairedConfig[$Section][$Key] = $DefaultConfig[$Section][$Key]
+                $WasChanged = $True
+            }
+        }
+    }
+
+    return [pscustomobject]@{
+        Config     = $RepairedConfig
+        WasChanged = $WasChanged
+    }
+}
+
+# Helper function to start, check and repair it.
+function Initialize-IniConfig {
+    $DefaultConfig = Get-DefaultIniConfig
+
+    if (!(Test-Path -LiteralPath $ConfigPath)) { return (New-DefaultIniConfig) }
+
+    $LoadedConfig = Import-IniConfig
+
+    if ($Null -eq $LoadedConfig) {
+        try {
+            $BackupPath = "$ConfigPath.broken"
+            Copy-Item -LiteralPath $ConfigPath -Destination $BackupPath -Force -ErrorAction SilentlyContinue
+        }
+        catch {}
+
+        return (New-DefaultIniConfig)
+    }
+
+    $RepairResult = Repair-IniConfig -LoadedConfig $LoadedConfig
+
+    if ($RepairResult.WasChanged) { Save-IniConfig -Data $RepairResult.Config }
+
+    return $RepairResult.Config
+}
+
+# Since we use booleans, let's make sure if somebody made it yes/no instead of true/false we still parse it.
+function ConvertTo-BoolSafe {
+    param( [object]$Value, [bool]$Default = $False )
+
+    if ($Null -eq $Value) { return $Default }
+
+    $Text = [string]$Value
+    switch -Regex ($Text.Trim().ToLowerInvariant()) {
+        '^(true|1|yes|y)$' { return $True }
+        '^(false|0|no|n)$' { return $False }
+        default { return $Default }
+    }
+}
+
+# ---------- Helpers & functions ----------
+
+# With this function we calculate the relative path of a file compared to the chosen input folder.
+# This allows us to recreate the same folder structure inside the output folder when copying files.
+# Example:
+#   Base = C:\Images\Input
+#   Full = C:\Images\Input\Vacation\photo.jpg
+#   Result = Vacation\photo.jpg
+# If the full path is somehow shorter or equal to the base path (unexpected edge case),
+# we simply return the filename to avoid path calculation errors.
 function Get-RelativePath([string]$Base, [string]$Full) {
     $BaseTrim = $Base.TrimEnd('\')
     if ($Full.Length -le $BaseTrim.Length) { return [IO.Path]::GetFileName($Full) }
@@ -61,9 +227,7 @@ function Test-ExifToolRunnable {
     # Try runtime check first (authoritative)
     try {
         $Ver = & $Path -ver 2>$Null
-        if ($Ver -and $Ver.Trim() -match '^\d+(\.\d+)*$') {
-            return $Ver.Trim()
-        }
+        if ($Ver -and $Ver.Trim() -match '^\d+(\.\d+)*$') { return $Ver.Trim() }
     }
     catch { return $Null }
 
@@ -80,6 +244,7 @@ function Test-ExifToolRunnable {
     return $Null
 }
 
+# Resolves executable path patterns (including wildcards) into existing file paths.
 function Expand-ExeCandidates([string[]]$Patterns) {
     $Out = New-Object System.Collections.Generic.List[string]
 
@@ -99,13 +264,10 @@ function Expand-ExeCandidates([string[]]$Patterns) {
 }
 
 
+# Single source of truth for:
+# - Candidate path patterns to scan (Resolve-ExifToolPath)
+# - Good starting directories for file picker (Set-ExifToolPath)
 function Get-ExifToolSearchInfo {
-    <#
-      Single source of truth for:
-      - Candidate path patterns to scan (Resolve-ExifToolPath)
-      - Good starting directories for file picker (Set-ExifToolPath)
-    #>
-
     $ChocoTools = "C:\ProgramData\chocolatey\lib\exiftool\tools"
     $WgLinks = Join-Path $Env:LOCALAPPDATA "Microsoft\WinGet\Links"
     $WgPackages = Join-Path $Env:LOCALAPPDATA "Microsoft\WinGet\Packages"
@@ -191,33 +353,21 @@ function Resolve-ExifToolPath {
 
     # Choose best initial directory from same sources as resolver
     $Ofd.InitialDirectory = $Env:USERPROFILE
-    foreach ($Dir in $Info.InitialDirectories) {
-        if ($Dir -and (Test-Path -LiteralPath $Dir)) { $Ofd.InitialDirectory = $Dir; break }
-    }
+    foreach ($Dir in $Info.InitialDirectories) { if ($Dir -and (Test-Path -LiteralPath $Dir)) { $Ofd.InitialDirectory = $Dir; break } }
 
     if ($Ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $Picked = $Ofd.FileName
         $Ver = Test-ExifToolRunnable -Path $Picked
         if ($Ver) { return [pscustomobject]@{ Path = $Picked; Version = $Ver } }
 
-        [System.Windows.Forms.MessageBox]::Show(
-            "That file doesn't seem to be ExifTool or it won't run.",
-            "Invalid selection",
-            [System.Windows.Forms.MessageBoxButtons]::OK,
-            [System.Windows.Forms.MessageBoxIcon]::Error
-        ) | Out-Null
+        [System.Windows.Forms.MessageBox]::Show( "That file doesn't seem to be ExifTool or it won't run.", "Invalid selection", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Error ) | Out-Null
     }
 
     # 5) Offer winget install (optional) — unchanged logic
     if ($OfferWingetInstall) {
         $Winget = Get-Command winget.exe -ErrorAction SilentlyContinue
         if ($Winget) {
-            $Choice = [System.Windows.Forms.MessageBox]::Show(
-                "ExifTool was not found.`r`n`r`nInstall ExifTool using winget now?",
-                "Install ExifTool",
-                [System.Windows.Forms.MessageBoxButtons]::YesNo,
-                [System.Windows.Forms.MessageBoxIcon]::Question
-            )
+            $Choice = [System.Windows.Forms.MessageBox]::Show( "ExifTool was not found.`r`n`r`nInstall ExifTool using winget now?", "Install ExifTool", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question )
 
             if ($Choice -eq [System.Windows.Forms.DialogResult]::Yes) {
                 try { & $Winget.Source update 2>$Null | Out-Null } catch {}
@@ -237,12 +387,7 @@ function Resolve-ExifToolPath {
                     }
                 }
                 else {
-                    [System.Windows.Forms.MessageBox]::Show(
-                        "Winget couldn't find an ExifTool package in your sources.",
-                        "Winget: package not found",
-                        [System.Windows.Forms.MessageBoxButtons]::OK,
-                        [System.Windows.Forms.MessageBoxIcon]::Warning
-                    ) | Out-Null
+                    [System.Windows.Forms.MessageBox]::Show( "Winget couldn't find an ExifTool package in your sources.", "Winget: package not found", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning ) | Out-Null
                 }
             }
         }
@@ -261,11 +406,9 @@ function Resolve-ExifToolPath {
     return $Null
 }
 
+# If we have a correct Exif path, let's set it.
 function Set-ExifToolPath {
-    param(
-        [string]$InitialDirectory = $Null,
-        [string]$CurrentExifToolPath = $Null
-    )
+    param( [string]$InitialDirectory = $Null, [string]$CurrentExifToolPath = $Null )
 
     $Info = Get-ExifToolSearchInfo
 
@@ -289,9 +432,7 @@ function Set-ExifToolPath {
     }
     else {
         $Ofd.InitialDirectory = $Env:USERPROFILE
-        foreach ($Dir in $Info.InitialDirectories) {
-            if ($Dir -and (Test-Path -LiteralPath $Dir)) { $Ofd.InitialDirectory = $Dir; break }
-        }
+        foreach ($Dir in $Info.InitialDirectories) { if ($Dir -and (Test-Path -LiteralPath $Dir)) { $Ofd.InitialDirectory = $Dir; break } }
     }
 
     if ($Ofd.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return $Null }
@@ -306,6 +447,7 @@ function Set-ExifToolPath {
     return [pscustomobject]@{ Path = $Picked; Version = $Ver }
 }
 
+# The label there needs to be updated.
 function Update-ExifLabel {
     if ($Script:Exif -and $Script:Exif.Path) {
         $Label_Chosen_ExifTool.Text = "ExifTool: $($Script:Exif.Path) - (v$($Script:Exif.Version))"
@@ -446,11 +588,18 @@ $Checkbox_Open_Output_Folder.AutoSize = $True
 $Checkbox_Open_Output_Folder.Checked = $False
 $Checkbox_Open_Output_Folder.Cursor = [System.Windows.Forms.Cursors]::Hand
 
+$Checkbox_Remember_Settings = New-Object System.Windows.Forms.CheckBox
+$Checkbox_Remember_Settings.Text = "Remember these settings for next run"
+$Checkbox_Remember_Settings.AutoSize = $True
+$Checkbox_Remember_Settings.Checked = $True
+$Checkbox_Remember_Settings.Cursor = [System.Windows.Forms.Cursors]::Hand
+
 Add-OptionRow -Panel $OptTable -Controls @($Label_Options_Section)
 Add-OptionRow -Panel $OptTable -Controls @($Checkbox_Include_Subfolders)
 Add-OptionRow -Panel $OptTable -Controls @($Checkbox_Remove_Thumbs)
 Add-OptionRow -Panel $OptTable -Controls @($Checkbox_Overwrite_Filenames)
 Add-OptionRow -Panel $OptTable -Controls @($Checkbox_Open_Output_Folder)
+Add-OptionRow -Panel $OptTable -Controls @($Checkbox_Remember_Settings)
 
 # --- ExifTool Row Panel (FIX: prevents it being hidden behind Dock panels) ---
 $PanelExif = New-Object System.Windows.Forms.TableLayoutPanel
@@ -545,19 +694,16 @@ $PanelFooter = New-Object System.Windows.Forms.TableLayoutPanel
 $PanelFooter.Dock = 'Bottom'
 $PanelFooter.AutoSize = $True
 $PanelFooter.AutoSizeMode = 'GrowAndShrink'
-$PanelFooter.ColumnCount = 3
+$PanelFooter.ColumnCount = 1
 $PanelFooter.RowCount = 2
-
-$PanelFooter.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50))) | Out-Null
-$PanelFooter.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
-$PanelFooter.ColumnStyles.Add((New-Object System.Windows.Forms.ColumnStyle([System.Windows.Forms.SizeType]::Percent, 50))) | Out-Null
 
 $PanelFooter.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
 $PanelFooter.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
 
 $Label_LinkGithub = New-Object System.Windows.Forms.LinkLabel
-$Label_LinkGithub.Text = "Bulk Image Metadata Removal – GitHub - Developed by NekoJonez - 25/12/2025 - Build 0.2 BETA"
+$Label_LinkGithub.Text = "Bulk Image Metadata Removal – GitHub - Developed by NekoJonez - 07/03/2026 - Build 0.3 BETA"
 $Label_LinkGithub.AutoSize = $True
+$Label_LinkGithub.Dock = 'Left'
 $Label_LinkGithub.LinkColor = [System.Drawing.Color]::DodgerBlue
 $Label_LinkGithub.ActiveLinkColor = [System.Drawing.Color]::RoyalBlue
 $Label_LinkGithub.VisitedLinkColor = [System.Drawing.Color]::Purple
@@ -567,11 +713,11 @@ $Button_Exit_Tool = New-Object System.Windows.Forms.Button
 $Button_Exit_Tool.Text = "Exit"
 $Button_Exit_Tool.AutoSize = $True
 $Button_Exit_Tool.Cursor = [System.Windows.Forms.Cursors]::Hand
+$Button_Exit_Tool.Anchor = 'None'
 $Button_Exit_Tool.Add_Click({ $Form.Close() })
 
-# Center them by putting in the middle column
-$PanelFooter.Controls.Add($Label_LinkGithub, 1, 0) | Out-Null
-$PanelFooter.Controls.Add($Button_Exit_Tool, 1, 1) | Out-Null
+$PanelFooter.Controls.Add($Label_LinkGithub, 0, 0) | Out-Null
+$PanelFooter.Controls.Add($Button_Exit_Tool, 0, 1) | Out-Null
 
 # --- FIX DOCK ORDER (prevents Top panels overlapping the Fill log) ---
 $Form.SuspendLayout()
@@ -598,6 +744,7 @@ $Tooltip_Display.SetToolTip($Checkbox_Include_Subfolders, "If enabled, includes 
 $Tooltip_Display.SetToolTip($Checkbox_Remove_Thumbs, "If enabled, removes embedded preview images/thumbnails if present.")
 $Tooltip_Display.SetToolTip($Checkbox_Overwrite_Filenames, "If enabled, this overwrites the filenames of files existing in the output folder.")
 $Tooltip_Display.SetToolTip($Checkbox_Open_Output_Folder, "If enabled, the output folder will be opened after conversion.")
+$Tooltip_Display.SetToolTip($Checkbox_Remember_Settings, "If enabled, the settings and folder choices will be remembered for the next run of the tool.")
 $Tooltip_Display.SetToolTip($Button_Select_ExifTool, "Select a different exiftool.exe.")
 $Tooltip_Display.SetToolTip($Button_Remember_Exif_Location, "Save the ExifTool path so you don’t need to re-select it next run.")
 $Tooltip_Display.SetToolTip($Button_Start_Process, "Copy images to Output and strip all metadata from the copies.")
@@ -622,10 +769,29 @@ $Button_Output_Folder_Choose.Add_Click({
         if ($FolderDlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $Text_OutputFolder.Text = $FolderDlg.SelectedPath }
     })
 
-# Load config preferred path, then resolve exiftool
-$ConfigFile = Import-Config
+# Load config preferred path + UI state, then resolve exiftool
+$ConfigFile = Initialize-IniConfig
 $Preferred = $Null
-if ($ConfigFile -and $ConfigFile.ExifToolPath) { $Preferred = [string]$ConfigFile.ExifToolPath }
+
+if ($ConfigFile -and $ConfigFile.Contains("General")) {
+    $General = $ConfigFile["General"]
+
+    if ($General.Contains("ExifToolPath")) { $Preferred = [string]$General["ExifToolPath"] }
+
+    if ($General.Contains("InputFolder")) { $Text_InputFolder.Text = [string]$General["InputFolder"] }
+
+    if ($General.Contains("OutputFolder")) { $Text_OutputFolder.Text = [string]$General["OutputFolder"] }
+
+    if ($General.Contains("IncludeSubfolders")) { $Checkbox_Include_Subfolders.Checked = ConvertTo-BoolSafe $General["IncludeSubfolders"] $True }
+
+    if ($General.Contains("RemoveThumbs")) { $Checkbox_Remove_Thumbs.Checked = ConvertTo-BoolSafe $General["RemoveThumbs"] $True }
+
+    if ($General.Contains("OverwriteFilenames")) { $Checkbox_Overwrite_Filenames.Checked = ConvertTo-BoolSafe $General["OverwriteFilenames"] $False }
+
+    if ($General.Contains("OpenOutputFolder")) { $Checkbox_Open_Output_Folder.Checked = ConvertTo-BoolSafe $General["OpenOutputFolder"] $False }
+
+    if ($General.Contains("RememberSettings")) { $Checkbox_Remember_Settings.Checked = ConvertTo-BoolSafe $General["RememberSettings"] $True }
+}
 
 $Script:Exif = Resolve-ExifToolPath -PreferredPath $Preferred -OfferWingetInstall -OpenDownloadIfMissing
 Reset-UIState
@@ -660,7 +826,7 @@ $Button_Remember_Exif_Location.Add_Click({
 
 $Button_Start_Process.Add_Click({
         if (!($Script:Exif -and $Script:Exif.Path)) { return }
-        if (-not (Watch-Valid-Folders)) { return }
+        if (!(Watch-Valid-Folders)) { return }
 
         $InputPath = $Text_InputFolder.Text.Trim()
         $OutputPath = $Text_OutputFolder.Text.Trim()
@@ -676,6 +842,7 @@ $Button_Start_Process.Add_Click({
         $Checkbox_Remove_Thumbs.Enabled = $False
         $Checkbox_Overwrite_Filenames.Enabled = $False
         $Checkbox_Open_Output_Folder.Enabled = $False
+        $Checkbox_Remember_Settings.Enabled = $False
 
         try {
             $Logbox_Log.Clear()
@@ -772,7 +939,32 @@ $Button_Start_Process.Add_Click({
             $Checkbox_Remove_Thumbs.Enabled = $True
             $Checkbox_Overwrite_Filenames.Enabled = $True
             $Checkbox_Open_Output_Folder.Enabled = $True
+            $Checkbox_Remember_Settings.Enabled = $True
             Reset-UIState
+        }
+    })
+
+$Form.Add_FormClosing({
+        if ($Checkbox_Remember_Settings.Checked -AND (Test-Path -Path $ConfigPath)) {
+            $ExifPathToSave = ""
+            if ($Script:Exif -and $Script:Exif.Path) { $ExifPathToSave = [string]$Script:Exif.Path }
+
+            $ConfigToSave = [ordered]@{
+                General = [ordered]@{
+                    ExifToolPath       = $ExifPathToSave
+                    InputFolder        = $Text_InputFolder.Text.Trim()
+                    OutputFolder       = $Text_OutputFolder.Text.Trim()
+                    IncludeSubfolders  = $Checkbox_Include_Subfolders.Checked
+                    RemoveThumbs       = $Checkbox_Remove_Thumbs.Checked
+                    OverwriteFilenames = $Checkbox_Overwrite_Filenames.Checked
+                    OpenOutputFolder   = $Checkbox_Open_Output_Folder.Checked
+                }
+            }
+
+            Save-IniConfig -Data $ConfigToSave
+        }
+        elseif ($Checkbox_Remember_Settings.Checked -AND (!(Test-Path -Path $ConfigPath))) {
+            [System.Windows.Forms.MessageBox]::Show( "WARNING: Settings could not be saved because the configuration file was not found.`r`nDefault settings will be used next time.", "Warning", [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning ) | Out-Null
         }
     })
 
