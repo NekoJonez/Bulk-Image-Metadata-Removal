@@ -1,7 +1,7 @@
 <#
 DeleteMetaData-UI.ps1 (Upgraded: Remember + Tooltips + Loaded Display)
 By NekoJonez - v0.3 BETA
-Release build date: 07/03/2025
+Release build date: 07/03/2026
 #>
 
 Add-Type -AssemblyName System.Windows.Forms
