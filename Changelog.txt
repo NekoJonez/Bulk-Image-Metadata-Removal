@@ -14,3 +14,12 @@ v0.2 - 25/12/2025
 - Improved the header.
 - The tool now default also searches the images folder for the ExifTool.
 - Gave the tool an icon.
+
+v0.3 - 07/03/2026
+
+- Very minor linting changes.
+- The tool will now create an INI file saving your settings.
+- A new button so can choose to remember your settings.
+- Removed some unneeded enters.
+- Added comments to the functions that were missing them.
+- The outline of the bottom of the UI has been corrected.
