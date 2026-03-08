@@ -1,7 +1,7 @@
 <#
 DeleteMetaData-UI.ps1 (Upgraded: Remember + Tooltips + Loaded Display)
-By NekoJonez - v0.3 BETA
-Release build date: 07/03/2026
+By NekoJonez - v0.3.1 BETA
+Release build date: 08/03/2026
 #>
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -11,7 +11,8 @@ Add-Type -AssemblyName System.Drawing
 $AllowedExtensions = @(".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".heic", ".heif", ".gif", ".bmp", ".jfif", ".avif")
 
 # ---------- Config persistence ----------
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ExePath = [System.Windows.Forms.Application]::ExecutablePath
+$ScriptDir = Split-Path -Parent $ExePath
 $ConfigDir = $ScriptDir
 $ConfigPath = Join-Path $ConfigDir "config.ini"
 
@@ -701,7 +702,7 @@ $PanelFooter.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Win
 $PanelFooter.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
 
 $Label_LinkGithub = New-Object System.Windows.Forms.LinkLabel
-$Label_LinkGithub.Text = "Bulk Image Metadata Removal – GitHub - Developed by NekoJonez - 07/03/2026 - Build 0.3 BETA"
+$Label_LinkGithub.Text = "Bulk Image Metadata Removal – GitHub - Developed by NekoJonez - 08/03/2026 - Build 0.3.1 BETA"
 $Label_LinkGithub.AutoSize = $True
 $Label_LinkGithub.Dock = 'Left'
 $Label_LinkGithub.LinkColor = [System.Drawing.Color]::DodgerBlue

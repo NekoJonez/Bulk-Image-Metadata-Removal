@@ -23,3 +23,7 @@ v0.3 - 07/03/2026
 - Removed some unneeded enters.
 - Added comments to the functions that were missing them.
 - The outline of the bottom of the UI has been corrected.
+
+v0.3.1 - 08/03/2026 (HOTFIX)
+
+- Fixed an issue where saving options stopped working due to the conversion to an EXE.
