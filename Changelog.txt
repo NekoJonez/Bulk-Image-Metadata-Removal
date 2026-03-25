@@ -27,3 +27,12 @@ v0.3 - 07/03/2026
 v0.3.1 - 08/03/2026 (HOTFIX)
 
 - Fixed an issue where saving options stopped working due to the conversion to an EXE.
+
+v0.4 - 25/03/2026
+
+- Added a forgotten comment within the v0.3 release
+- The tool will now correctly make the INI file in AppData and not in the default Powershell install folder.
+- Tweaked the tooltips a tiny bit.
+- Minor spaces added to make the writing of the functions consistent.
+- Fixed a bug where in some cases the unchecking "save settings" checkbox didn't work.
+- Added an "Open..." folder button to the input and output folders.

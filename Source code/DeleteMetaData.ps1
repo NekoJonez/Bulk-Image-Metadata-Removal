@@ -1,7 +1,7 @@
 <#
 DeleteMetaData-UI.ps1 (Upgraded: Remember + Tooltips + Loaded Display)
-By NekoJonez - v0.3.1 BETA
-Release build date: 08/03/2026
+By NekoJonez - v0.4 BETA
+Release build date: 25/03/2026
 #>
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -11,9 +11,8 @@ Add-Type -AssemblyName System.Drawing
 $AllowedExtensions = @(".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff", ".heic", ".heif", ".gif", ".bmp", ".jfif", ".avif")
 
 # ---------- Config persistence ----------
-$ExePath = [System.Windows.Forms.Application]::ExecutablePath
-$ScriptDir = Split-Path -Parent $ExePath
-$ConfigDir = $ScriptDir
+$AppDataPath = [Environment]::GetFolderPath('ApplicationData')
+$ConfigDir = Join-Path $AppDataPath "BulkDeleteMetadata"
 $ConfigPath = Join-Path $ConfigDir "config.ini"
 
 # Let's make sure the directory exists, if not create.
@@ -217,7 +216,7 @@ function Add-To-Log([System.Windows.Forms.TextBox]$InputTextbox, [string]$Loglin
 
 # We are going to test if the tool isn't corrupted/an actual ExifTool and get the version number.
 function Test-ExifToolRunnable {
-    param([Parameter(Mandatory)][string]$Path)
+    param( [Parameter(Mandatory)][string]$Path )
 
     if (!(Test-Path -LiteralPath $Path)) { return $Null }
 
@@ -263,7 +262,6 @@ function Expand-ExeCandidates([string[]]$Patterns) {
 
     $Out | Select-Object -Unique
 }
-
 
 # Single source of truth for:
 # - Candidate path patterns to scan (Resolve-ExifToolPath)
@@ -320,6 +318,7 @@ function Get-ExifToolSearchInfo {
     }
 }
 
+# With this we shall do a check if the EXIF path is valid en where it is. Otherwise we offer an install.
 function Resolve-ExifToolPath {
     param( [string]$PreferredPath = $Null, [switch]$OfferWingetInstall, [switch]$OpenDownloadIfMissing )
 
@@ -490,6 +489,19 @@ function Add-OptionRow {
     for ($Col = 0; $Col -lt $Controls.Count; $Col++) { if ($Controls[$Col]) { $Panel.Controls.Add($Controls[$Col], $Col, $Row) | Out-Null } }
 }
 
+# With this function we can check if it's a valid path or not.
+function Test-ValidPath {
+    param ( [Parameter(Mandatory)] [string]$Path )
+
+    try {
+        if ([string]::IsNullOrWhiteSpace($Path)) { return $False }
+        return Test-Path -Path $Path
+    }
+    catch {
+        return $False
+    }
+}
+
 # ---------- UI ----------
 # --- Form ---
 $Form = New-Object System.Windows.Forms.Form
@@ -503,7 +515,7 @@ $Table_Input_Output = New-Object System.Windows.Forms.TableLayoutPanel
 $Table_Input_Output.Dock = 'Top'
 $Table_Input_Output.AutoSize = $True
 $Table_Input_Output.AutoSizeMode = 'GrowAndShrink'
-$Table_Input_Output.ColumnCount = 3
+$Table_Input_Output.ColumnCount = 4
 $Table_Input_Output.RowCount = 2
 
 # Column styles
@@ -519,11 +531,18 @@ $Label_Input_Folder.Anchor = 'Left'
 
 $Text_InputFolder = New-Object System.Windows.Forms.TextBox
 $Text_InputFolder.Dock = 'Fill'
+$Text_InputFolder.Add_TextChanged({ $Button_Input_Folder_Open.Enabled = if ([string]::IsNullOrWhiteSpace($Text_InputFolder.Text)) { $False } else { Test-ValidPath -Path $Text_InputFolder.Text } })
 
 $Button_Input_Folder_Choose = New-Object System.Windows.Forms.Button
 $Button_Input_Folder_Choose.Text = "Browse…"
 $Button_Input_Folder_Choose.Dock = 'Fill'
 $Button_Input_Folder_Choose.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+$Button_Input_Folder_Open = New-Object System.Windows.Forms.Button
+$Button_Input_Folder_Open.Text = "Open…"
+$Button_Input_Folder_Open.Dock = 'Fill'
+$Button_Input_Folder_Open.Enabled = if ([string]::IsNullOrWhiteSpace($Text_InputFolder.Text)) { $False } else { Test-ValidPath -Path $Text_InputFolder.Text }
+$Button_Input_Folder_Open.Cursor = [System.Windows.Forms.Cursors]::Hand
 
 # --- Output row ---
 $Label_Output_Folder = New-Object System.Windows.Forms.Label
@@ -533,20 +552,29 @@ $Label_Output_Folder.Anchor = 'Left'
 
 $Text_OutputFolder = New-Object System.Windows.Forms.TextBox
 $Text_OutputFolder.Dock = 'Fill'
+$Text_OutputFolder.Add_TextChanged({ $Button_Output_Folder_Open.Enabled = if ([string]::IsNullOrWhiteSpace($Text_InputFolder.Text)) { $False } else { Test-ValidPath -Path $Text_InputFolder.Text } })
 
 $Button_Output_Folder_Choose = New-Object System.Windows.Forms.Button
 $Button_Output_Folder_Choose.Text = "Browse…"
 $Button_Output_Folder_Choose.Dock = 'Fill'
 $Button_Output_Folder_Choose.Cursor = [System.Windows.Forms.Cursors]::Hand
 
+$Button_Output_Folder_Open = New-Object System.Windows.Forms.Button
+$Button_Output_Folder_Open.Text = "Open…"
+$Button_Output_Folder_Open.Dock = 'Fill'
+$Button_Output_Folder_Open.Enabled = if ([string]::IsNullOrWhiteSpace($Text_InputFolder.Text)) { $False } else { Test-ValidPath -Path $Text_InputFolder.Text }
+$Button_Output_Folder_Open.Cursor = [System.Windows.Forms.Cursors]::Hand
+
 # --- Input & output adding to the table_input_output ---
 $Table_Input_Output.Controls.Add($Label_Input_Folder, 0, 0) | Out-Null
 $Table_Input_Output.Controls.Add($Text_InputFolder, 1, 0) | Out-Null
 $Table_Input_Output.Controls.Add($Button_Input_Folder_Choose, 2, 0) | Out-Null
+$Table_Input_Output.Controls.Add($Button_Input_Folder_Open, 3, 0) | Out-Null
 
 $Table_Input_Output.Controls.Add($Label_Output_Folder, 0, 1) | Out-Null
 $Table_Input_Output.Controls.Add($Text_OutputFolder, 1, 1) | Out-Null
 $Table_Input_Output.Controls.Add($Button_Output_Folder_Choose, 2, 1) | Out-Null
+$Table_Input_Output.Controls.Add($Button_Output_Folder_Open, 3, 1) | Out-Null
 
 # --- Options TableLayoutPanel (under the first table) ---
 $OptTable = New-Object System.Windows.Forms.TableLayoutPanel
@@ -702,7 +730,7 @@ $PanelFooter.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Win
 $PanelFooter.RowStyles.Add((New-Object System.Windows.Forms.RowStyle([System.Windows.Forms.SizeType]::AutoSize))) | Out-Null
 
 $Label_LinkGithub = New-Object System.Windows.Forms.LinkLabel
-$Label_LinkGithub.Text = "Bulk Image Metadata Removal – GitHub - Developed by NekoJonez - 08/03/2026 - Build 0.3.1 BETA"
+$Label_LinkGithub.Text = "Bulk Image Metadata Removal – GitHub - Developed by NekoJonez - 25/03/2026 - Build 0.4 BETA"
 $Label_LinkGithub.AutoSize = $True
 $Label_LinkGithub.Dock = 'Left'
 $Label_LinkGithub.LinkColor = [System.Drawing.Color]::DodgerBlue
@@ -740,10 +768,12 @@ $Tooltip_Display.ReshowDelay = 150
 $Tooltip_Display.ShowAlways = $True
 
 $Tooltip_Display.SetToolTip($Button_Input_Folder_Choose, "Pick the folder that contains the images you want to clean.")
+$Tooltip_Display.SetToolTip($Button_Input_Folder_Open, "Open the selected folder for the input images.")
 $Tooltip_Display.SetToolTip($Button_Output_Folder_Choose, "Pick where the cleaned copies should be written.")
+$Tooltip_Display.SetToolTip($Button_Output_Folder_Open, "Open the selected folder for the output images.")
 $Tooltip_Display.SetToolTip($Checkbox_Include_Subfolders, "If enabled, includes images in subfolders too.")
 $Tooltip_Display.SetToolTip($Checkbox_Remove_Thumbs, "If enabled, removes embedded preview images/thumbnails if present.")
-$Tooltip_Display.SetToolTip($Checkbox_Overwrite_Filenames, "If enabled, this overwrites the filenames of files existing in the output folder.")
+$Tooltip_Display.SetToolTip($Checkbox_Overwrite_Filenames, "If enabled, this overwrites the filenames of images existing in the output folder.")
 $Tooltip_Display.SetToolTip($Checkbox_Open_Output_Folder, "If enabled, the output folder will be opened after conversion.")
 $Tooltip_Display.SetToolTip($Checkbox_Remember_Settings, "If enabled, the settings and folder choices will be remembered for the next run of the tool.")
 $Tooltip_Display.SetToolTip($Button_Select_ExifTool, "Select a different exiftool.exe.")
@@ -769,6 +799,10 @@ $Button_Output_Folder_Choose.Add_Click({
         $FolderDlg.Description = "Select OUTPUT folder for cleaned images"
         if ($FolderDlg.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { $Text_OutputFolder.Text = $FolderDlg.SelectedPath }
     })
+
+$Button_Input_Folder_Open.Add_Click({ Start-Process -FilePath $Text_InputFolder.Text })
+
+$Button_Output_Folder_Open.Add_Click({ Start-Process -FilePath $Text_OutputFolder.Text })
 
 # Load config preferred path + UI state, then resolve exiftool
 $ConfigFile = Initialize-IniConfig
@@ -835,7 +869,9 @@ $Button_Start_Process.Add_Click({
         # Disable controls during run
         $Button_Start_Process.Enabled = $False
         $Button_Input_Folder_Choose.Enabled = $False
+        $Button_Input_Folder_Open.Enabled = $False
         $Button_Output_Folder_Choose.Enabled = $False
+        $Button_Output_Folder_Open.Enabled = $False
         $Button_Select_ExifTool.Enabled = $False
         $Button_Remember_Exif_Location.Enabled = $False
         $Button_Exit_Tool.Enabled = $False
@@ -932,7 +968,9 @@ $Button_Start_Process.Add_Click({
         finally {
             # Re-enable
             $Button_Input_Folder_Choose.Enabled = $True
+            $Button_Input_Folder_Open.Enabled = $True
             $Button_Output_Folder_Choose.Enabled = $True
+            $Button_Output_Folder_Open.Enabled = $True
             $Button_Select_ExifTool.Enabled = $True
             $Button_Remember_Exif_Location.Enabled = $True
             $Button_Exit_Tool.Enabled = $True
